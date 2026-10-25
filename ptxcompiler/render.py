@@ -1,13 +1,19 @@
 """Phase 2: turn the flat Uop list into PTX text."""
 
+import struct
+
 from .uops import ALU, REG_CLASSES
 
 PAD = "        "
 
+def operand(x):
+    if isinstance(x, float):
+        return "0f%08X" % struct.unpack(">I", struct.pack(">f", x))[0]
+    return str(x);
 
 def r_param(u):  return [f"ld.param.u64 {u.dst}, [param_{u.arg}];", f"cvta.to.global.u64 {u.dst}, {u.dst};"]
 def r_sreg(u):   return [f"mov.u32 {u.dst}, {u.arg};"]
-def r_alu(u):    return [f"{ALU[u.arg]} {u.dst}, {', '.join(map(str, u.srcs))};"]
+def r_alu(u):    return [f"{ALU[u.arg]} {u.dst}, {', '.join(map(operand, u.srcs))};"]
 def r_load(u):   return [f"ld.global.f32 {u.dst}, [{u.srcs[0]}];"]
 def r_branch(u): return [f"@{u.srcs[0]} bra {u.arg};"]
 def r_label(u):  return [f"{u.arg}:"]

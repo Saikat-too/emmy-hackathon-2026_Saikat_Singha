@@ -1,8 +1,9 @@
 """Phase 1: walk the Kernel IR and append Uops to a flat list."""
 
+from pickle import BINBYTES
 import sys
 
-from .uops import REG_CLASSES, ALU,BINARY_FLOAT_OPS, Uop
+from .uops import REG_CLASSES, ALU,BINARY_FLOAT_OPS,UNARY_FLOAT_OPS, Uop
 
 
 class Lowerer:
@@ -86,11 +87,15 @@ class Lowerer:
         self.env[s.names[0]] = dst
 
     def stmt_Assign(self, s):
-        op = BINARY_FLOAT_OPS.get(s.op.name)
-        if op is None:
-            sys.exit(f"compile error: op {s.op.name} not supported")
-        a, b = (self.env[x] for x in s.args)
-        self.env[s.name] = self.alu(op,"f", a, b)
+        name = s.op.name
+        args = [self.env[x] for x in s.args]
+        if name in BINARY_FLOAT_OPS:
+            self.env[s.name] = self.alu(BINARY_FLOAT_OPS[name], "f", *args)
+        elif name in UNARY_FLOAT_OPS:
+            op, const = UNARY_FLOAT_OPS[name]
+            self.env[s.name] = self.alu(op, "f", args[0], const)
+        else:
+            sys.exit(f"Compile Error: op {name} not supported")
 
     def stmt_Write(self, s):
         addr = self.address(s.output, s.index)

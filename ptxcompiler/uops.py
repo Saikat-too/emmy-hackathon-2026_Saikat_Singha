@@ -19,9 +19,14 @@ ALU = {
     "ige": "setp.ge.s32",
     "fadd": "add.rn.f32",
     "fmul": "mul.rn.f32",
+    "fmax": "max.f32",
 }
 
+# IR elementwise op name -> ALU op key
 BINARY_FLOAT_OPS = {"add": "fadd", "multiply": "fmul"}
+
+# relu(x) = max(x, 0.0)
+UNARY_FLOAT_OPS = {"relu": ("fmax", 0.0)}
 
 class Uop(NamedTuple):
     kind: str            # PARAM, SREG, ALU, LOAD, STORE, BRANCH, LABEL
