@@ -18,8 +18,10 @@ ALU = {
     "ptr_add": "add.s64",
     "ige": "setp.ge.s32",
     "fadd": "add.rn.f32",
+    "fmul": "mul.rn.f32",
 }
 
+BINARY_FLOAT_OPS = {"add": "fadd", "multiply": "fmul"}
 
 class Uop(NamedTuple):
     kind: str            # PARAM, SREG, ALU, LOAD, STORE, BRANCH, LABEL

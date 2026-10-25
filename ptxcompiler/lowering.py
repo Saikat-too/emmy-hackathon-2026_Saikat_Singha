@@ -2,7 +2,7 @@
 
 import sys
 
-from .uops import ALU, REG_CLASSES, Uop
+from .uops import REG_CLASSES, ALU,BINARY_FLOAT_OPS, Uop
 
 
 class Lowerer:
@@ -71,6 +71,11 @@ class Lowerer:
         sys.exit(f"compile error: index expression {kind} not supported")
 
     def address(self, buffer, index):
+        i = self.expr(index[0])
+        if isinstance(i, int):  # constant index, e.g. mul_c1[0]
+            if i == 0:
+                return self.ptr[buffer]
+            return self.alu("ptr_add", "rd", self.ptr[buffer], i * 4)
         off = self.alu("wide_imul", "rd", self.expr(index[0]), 4)   # element -> bytes
         return self.alu("ptr_add", "rd", self.ptr[buffer], off)
 
@@ -81,10 +86,11 @@ class Lowerer:
         self.env[s.names[0]] = dst
 
     def stmt_Assign(self, s):
-        if s.op.name != "add":
+        op = BINARY_FLOAT_OPS.get(s.op.name)
+        if op is None:
             sys.exit(f"compile error: op {s.op.name} not supported")
         a, b = (self.env[x] for x in s.args)
-        self.env[s.name] = self.alu("fadd", "f", a, b)
+        self.env[s.name] = self.alu(op,"f", a, b)
 
     def stmt_Write(self, s):
         addr = self.address(s.output, s.index)
