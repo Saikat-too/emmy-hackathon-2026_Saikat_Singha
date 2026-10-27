@@ -16,7 +16,12 @@ ALU = {
     "mad": "mad.lo.s32",
     "wide_imul": "mul.wide.s32",
     "ptr_add": "add.s64",
+    "and": "and.b32",
+    "shr": "shr.u32",
+    "ilt": "setp.lt.s32",
     "ige": "setp.ge.s32",
+    "ieq": "setp.eq.s32",
+    "ine": "setp.ne.s32",
     "fadd": "add.rn.f32",
     "fmul": "mul.rn.f32",
     "fmax": "max.f32",
@@ -27,6 +32,9 @@ BINARY_FLOAT_OPS = {"add": "fadd", "multiply": "fmul"}
 
 # relu(x) = max(x, 0.0)
 UNARY_FLOAT_OPS = {"relu": ("fmax", 0.0)}
+
+# jump past as an if body if (lane == 0) -> setp.ne.s32 -> jump past the body when lane not equal to 0
+INVERSE_COMPARE = {"==": "ine", "!=":"ieq", "<": "ige", ">=": "ilt"}
 
 class Uop(NamedTuple):
     kind: str            # PARAM, SREG, ALU, LOAD, STORE, BRANCH, LABEL

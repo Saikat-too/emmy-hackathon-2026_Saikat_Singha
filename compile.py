@@ -32,7 +32,7 @@ def main():
     kernel, arg_order = load_kernel(Path(sys.argv[1]))
     lowerer = Lowerer(kernel, arg_order)
     uops = lowerer.lower()
-    sys.stdout.write(render(kernel.name, arg_order, uops, lowerer.counts))
+    sys.stdout.write(render(kernel.name, arg_order, uops, lowerer.counts, lowerer.smem))
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 from pickle import BINBYTES
 import sys
 
-from .uops import REG_CLASSES, ALU,BINARY_FLOAT_OPS,UNARY_FLOAT_OPS, Uop
+from .uops import INVERSE_COMPARE, REG_CLASSES, ALU,BINARY_FLOAT_OPS,UNARY_FLOAT_OPS, Uop
 
 
 class Lowerer:
@@ -13,6 +13,9 @@ class Lowerer:
         self.counts = {cls: 0 for cls in REG_CLASSES}   # one counter per register class
         self.ptr = {}      # buffer name -> register holding its address
         self.env = {}      # IR name -> register
+        self.smem = {}     # shared array name -> size in bytes
+        self.smem_base = {} # shared array bname -> register holding its base address
+        self.n_labels = 0
 
     # ---- helpers used everywhere ----
 
@@ -21,26 +24,40 @@ class Lowerer:
         self.counts[cls] += 1
         return f"%{cls}{self.counts[cls]}"
 
+    def new_label(self, prefix):
+        self.n_labels += 1
+        return f"{prefix}_{self.n_labels}"
+
     def add(self, kind, dst=None, srcs=(), arg=None):
         """Append one Uop; return its destination register."""
         self.uops.append(Uop(kind, dst, tuple(srcs), arg))
         return dst
 
-    def alu(self, op, cls, *srcs):
-        """Append an ALU Uop writing a fresh register; return that register."""
+    def alu(self, op, cls, *srcs, into=None):
+        """Append an ALU Uop writing a fresh register; return that register.
+          By default the result goes to a fresh register. With into=reg it is written to an existing register instead
+        """
         if op not in ALU:
             raise KeyError(f"unknown ALU op {op!r}")
-        return self.add("ALU", self.reg(cls), srcs, op)
+        return self.add("ALU", into or self.reg(cls), srcs, op)
 
     # ---- driver ----
 
     def lower(self):
         tile = self.kernel.body[0]
         self.prologue(tile)
-        for stmt in tile.body:                          # one method per IR node type
-            getattr(self, "stmt_" + type(stmt).__name__)(stmt)
+        self.lower_body(tile.body)
         self.add("LABEL", arg="DONE")
         return self.uops
+
+    def lower_body(self, stmts):
+        for stmt in stmts:
+            # one method per IR node type
+            kind = type(stmt).__name__
+            handler = getattr(self, "stmt_" + kind, None)
+            if handler is None:
+                sys.exit(f"Compile Error: statment {kind} not supported yet")
+            handler(stmt)
 
     def prologue(self, tile):
         for name in self.arg_order:
@@ -49,6 +66,8 @@ class Lowerer:
         ntid = self.add("SREG", self.reg("r"), arg="%ntid.x")
         cta = self.add("SREG", self.reg("r"), arg="%ctaid.x")
         gid = self.alu("mad", "r", cta, ntid, tid)      # my thread number
+        self.env["lane"] = self.alu("and", "r", tid , 31) # position inside my warp
+        self.env["warp"] = self.alu("shr", "r", tid, 5) # which warp of the block
         guard = self.alu("ige", "p", gid, int(tile.axes[0].extent.value))
         self.add("BRANCH", None, (guard,), "DONE")      # thread >= N: leave
         self.env[tile.axes[0].name] = gid
@@ -72,7 +91,7 @@ class Lowerer:
         sys.exit(f"compile error: index expression {kind} not supported")
 
     def address(self, buffer, index):
-        i = self.expr(index[0])
+        i = self.expr(index[0]) if index else 0
         if isinstance(i, int):  # constant index, e.g. mul_c1[0]
             if i == 0:
                 return self.ptr[buffer]
@@ -80,23 +99,131 @@ class Lowerer:
         off = self.alu("wide_imul", "rd", self.expr(index[0]), 4)   # element -> bytes
         return self.alu("ptr_add", "rd", self.ptr[buffer], off)
 
+    def smem_address(self, buffer, index):
+        """ Registers holding the shared-memory address of buffer[index] (index: int or register)"""
+        base = self.smem_base[buffer]
+        if isinstance(index, int):
+            return base if index == 0 else self.alu("iadd", "r", base, index*4)
+        return self.alu("mad", "r", index, 4, base)
+
     # ---- statements ----
 
     def stmt_Load(self, s):
         dst = self.add("LOAD", self.reg("f"), (self.address(s.input, s.index),))
         self.env[s.names[0]] = dst
 
-    def stmt_Assign(self, s):
+    def stmt_Assign(self,s):
+        self.assign(s)
+
+    def assign(self, s, into=None):
         name = s.op.name
         args = [self.env[x] for x in s.args]
         if name in BINARY_FLOAT_OPS:
-            self.env[s.name] = self.alu(BINARY_FLOAT_OPS[name], "f", *args)
+            dst = self.alu(BINARY_FLOAT_OPS[name], "f", *args, into=into)
         elif name in UNARY_FLOAT_OPS:
             op, const = UNARY_FLOAT_OPS[name]
-            self.env[s.name] = self.alu(op, "f", args[0], const)
+            dst = self.alu(op, "f", args[0], const, into=into)
         else:
             sys.exit(f"Compile Error: op {name} not supported")
+        self.env[s.name] = dst
 
     def stmt_Write(self, s):
+        if s.atomic:
+            sys.exit("compile error: atomic Write not supported yet")
+        if s.output in self.smem:                       # write into a shared array
+            if len(s.values) != 1:
+                sys.exit("compile error: grouped shared-memory Write not supported yet")
+            index = self.expr(s.index[0]) if s.index else 0
+            self.add("ST_SHARED", None, (self.smem_address(s.output, index), self.env[s.values[0]]))
+            return
         addr = self.address(s.output, s.index)
         self.add("STORE", None, (addr, *(self.env[v] for v in s.values)))
+
+    def stmt_StridedLoop(self, s):
+        """for a0 in start..end:step - the loop counter is one register, updated in place."""
+        for inner in s.body:
+            if type(inner).__name__ == "Accum":
+                self.env[inner.name] = self.add("MOV", self.reg("f"), (float(inner.init.value),), "f32")
+        i = self.add("MOV", self.reg("r"), (self.expr(s.start),), "u32")
+        bound = int(s.axis.extent.value) if s.end is None else self.expr(s.end)
+        step = self.expr(s.step)
+        top , end = self.new_label("LOOP"), self.new_label("LOOP_END")
+        self.add("LABEL", arg=top)
+        done = self.alu("ige", "p", i, bound)
+        self.add("BRANCH", None, (done,), end)
+        self.env[s.axis.name] = i
+        self.lower_body(s.body)
+        self.alu("iadd", "r", i, step, into=i)
+        self.add("JUMP", arg=top)
+        self.add("LABEL", arg=end)
+
+    def stmt_Accum(self, s):
+        """ acc <- op(acc, value), written back into the accumulator's own registe"""
+        op = BINARY_FLOAT_OPS.get(s.op.name)
+        if op is None:
+            sys.exit(f"Compile error: accumulate op {s.op.name} is not supported")
+        acc = self.env[s.name]
+        self.alu(op, "f", acc, self.env[s.value], into=acc)
+
+    def stmt_WarpShuffle(self, s):
+        """ Butterfly across the warp: offsets length/2,.., 2, 1; combine after each round"""
+        offset = s.length // 2
+        while offset >= 1:
+            for name, name_b in zip(s.state, s.state_b):
+                bits = self.add("MOV", self.reg("r"), (self.env[name],), "b32")
+                got = self.add("SHFL", self.reg("r"), (bits,), offset)
+                self.env[name_b] = self.add("MOV", self.reg("f"), (got,), "b32")
+            for c in s.combine_states:
+                self.assign(c, into=self.env[c.name])
+            offset //=2
+
+    def stmt_Smem(self, s):
+        if s.dtype != "float":
+            sys.exit(f"Compile error: share array type {s.dtype} not supported yet")
+        size = 4
+        for e in s.extents:
+            size *= int(getattr(e, "value", e))
+        self.smem[s.name] = size
+        self.smem_base[s.name] = self.add("SMEM_BASE", self.reg("r"), arg=s.name)
+
+    def stmt_Cond(self, s):
+        """ if cond: body - jump past the body when the opposite comparison holds"""
+        c = s.cond
+        if s.else_body or type(c).__name__ != "BinaryExpr" or c.op not in INVERSE_COMPARE:
+            sys.exit("Compile Error: this kind of if is not supported yet")
+        skip = self.alu(INVERSE_COMPARE[c.op], "p", self.expr(c.left), self.expr(c.right))
+        end = self.new_label("ENDIF")
+        self.add("BRANCH", None, (skip,), end)
+        self.lower_body(s.body)
+        self.add("LABEL", arg=end)
+
+    def stmt_Sync(self, s):
+        if s.count is  not None or s.warp:
+            sys.exit("Compile Error: THis kind of sync is not supported yet")
+        self.add("BAR", arg=s.barrier_id)
+
+    def stmt_TreeHalve(self, s):
+        """Fold shared-memory partials by halving; length is static, so the loop is unrolled here."""
+        if s.inner is not None:
+            sys.exit("compile error: TreeHalve with inner not supported yet")
+        tid = self.env[s.tid_var]
+        own = {name: self.env[name] for name in s.state}    # each thread's own accumulator registers
+        step = s.length // 2
+        while step >= 1:
+            skip = self.alu("ige", "p", tid, step)          # only tid < step does work
+            end = self.new_label("HALVE")
+            self.add("BRANCH", None, (skip,), end)
+            other = self.alu("iadd", "r", tid, step)
+            for buf, name, name_b in zip(s.bufs, s.state, s.state_b):
+                self.env[name] = self.add("LD_SHARED", self.reg("f"), (self.smem_address(buf, tid),))
+                self.env[name_b] = self.add("LD_SHARED", self.reg("f"), (self.smem_address(buf, other),))
+            for c in s.combine_states:
+                self.assign(c, into=self.env[c.name])
+            for buf, name in zip(s.bufs, s.state):
+                self.add("ST_SHARED", None, (self.smem_address(buf, tid), self.env[name]))
+            self.add("LABEL", arg=end)
+            self.add("BAR", arg=s.barrier_id)               # every thread reaches the barrier
+            step //= 2
+        for buf, name in zip(s.bufs, s.state):              # everyone reads the final total
+            self.add("LD_SHARED", own[name], (self.smem_address(buf, 0),))
+            self.env[name] = own[name]
