@@ -30,10 +30,12 @@ ALU = {
     "fdiv": "div.rn.f32",
     "fsqrt": "sqrt.rn.f32",
     "frcp": "rcp.rn.f32",
+    "fsub": "sub.rn.f32",
+    "fex2": "ex2.approx.ftz.f32",
 }
 
 # IR elementwise op name -> ALU op key
-BINARY_FLOAT_OPS = {"add": "fadd", "multiply": "fmul", "divide": "fdiv"}
+BINARY_FLOAT_OPS = {"add": "fadd", "multiply": "fmul", "divide": "fdiv", "subtract": "fsub", "maximum": "fmax"}
 
 # relu(x) = max(x, 0.0)
 UNARY_FLOAT_OPS = {"relu": ("fmax", 0.0)}
@@ -42,6 +44,8 @@ UNARY_FLOAT_OPS = {"relu": ("fmax", 0.0)}
 INVERSE_COMPARE = {"==": "ine", "!=":"ieq", "<": "ige", ">=": "ilt"}
 
 SIMPLE_UNARY_OPS = {"sqrt": "fsqrt", "reciprocal": "frcp"}
+
+LOG2E = 1.4426950408889634    # exp(x) = 2 ** (x * log2(e))
 
 class Uop(NamedTuple):
     kind: str            # PARAM, SREG, ALU, LOAD, STORE, BRANCH, LABEL
