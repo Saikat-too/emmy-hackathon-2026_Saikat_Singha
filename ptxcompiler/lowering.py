@@ -7,8 +7,9 @@ from .uops import INVERSE_COMPARE, REG_CLASSES, ALU,BINARY_FLOAT_OPS,UNARY_FLOAT
 
 
 class Lowerer:
-    def __init__(self, kernel, arg_order):
+    def __init__(self, kernel, arg_order, shapes):
         self.kernel, self.arg_order = kernel, arg_order
+        self.shapes = shapes
         self.uops = []
         self.counts = {cls: 0 for cls in REG_CLASSES}   # one counter per register class
         self.ptr = {}      # buffer name -> register holding its address
@@ -68,9 +69,17 @@ class Lowerer:
         gid = self.alu("mad", "r", cta, ntid, tid)      # my thread number
         self.env["lane"] = self.alu("and", "r", tid , 31) # position inside my warp
         self.env["warp"] = self.alu("shr", "r", tid, 5) # which warp of the block
-        guard = self.alu("ige", "p", gid, int(tile.axes[0].extent.value))
-        self.add("BRANCH", None, (guard,), "DONE")      # thread >= N: leave
-        self.env[tile.axes[0].name] = gid
+        extents = [int(ax.extent.value) for ax in tile.axes]
+        total = 1
+        for e in extents:
+            total *= e
+        guard = self.alu("ige", "p", gid, total)
+        self.add("BRANCH",  None, (guard,), "DONE")
+        rest = gid
+        for ax , ext in reversed(list(zip(tile.axes, extents))[1:]):
+            self.env[ax.name] = self.alu("irem", "r", rest, ext)
+            rest = self.alu("idiv", "r", rest, ext)
+        self.env[tile.axes[0].name] = rest
 
     # ---- index expressions: return an int or a register ----
 
@@ -90,13 +99,31 @@ class Lowerer:
                 return self.alu("imul", "r", a, b)
         sys.exit(f"compile error: index expression {kind} not supported")
 
+    def float_index(self, buffer, index):
+        """ Row major element number of buffer[index]; an empty index means element 0."""
+        if not index:
+            return 0
+        shape = self.shapes[buffer]
+        if len(index) != len(shape):
+            sys.exit(f"Compile Error: {buffer} has {len(shape)} dims but the index has {len(index)}")
+        flat = self.expr(index[0])
+        for e, dim in zip(index[1:], shape[1:]):
+            coord = self.expr(e)
+            if isinstance(flat, int) and isinstance(coord, int):
+                flat = flat * dim + coord
+            elif isinstance(flat, int):
+                flat = self.alu("iadd", "r", coord, flat * dim) if flat else coord
+            else:
+                flat = self.alu("mad", "r", flat, dim, coord) # flat * dim + coord
+        return flat
+
     def address(self, buffer, index):
-        i = self.expr(index[0]) if index else 0
+        i = self.float_index(buffer, index)
         if isinstance(i, int):  # constant index, e.g. mul_c1[0]
             if i == 0:
                 return self.ptr[buffer]
             return self.alu("ptr_add", "rd", self.ptr[buffer], i * 4)
-        off = self.alu("wide_imul", "rd", self.expr(index[0]), 4)   # element -> bytes
+        off = self.alu("wide_imul", "rd", i, 4)   # element -> bytes
         return self.alu("ptr_add", "rd", self.ptr[buffer], off)
 
     def smem_address(self, buffer, index):

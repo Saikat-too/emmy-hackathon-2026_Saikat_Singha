@@ -13,8 +13,9 @@ REG_CLASSES = {"p": "pred", "r": "b32", "rd": "b64", "f": "f32"}
 ALU = {
     "iadd": "add.s32",
     "imul": "mul.lo.s32",
+    "irem": "rem.s32",
+    "idiv": "div.s32",
     "mad": "mad.lo.s32",
-    "fdiv": "div.rn.f32",
     "wide_imul": "mul.wide.s32",
     "ptr_add": "add.s64",
     "and": "and.b32",
@@ -26,6 +27,7 @@ ALU = {
     "fadd": "add.rn.f32",
     "fmul": "mul.rn.f32",
     "fmax": "max.f32",
+    "fdiv": "div.rn.f32",
 }
 
 # IR elementwise op name -> ALU op key

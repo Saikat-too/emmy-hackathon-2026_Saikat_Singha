@@ -25,12 +25,13 @@ def load_kernel(ir_path):
     node = next(n for n in graph.nodes.values() if type(n.op).__name__ == "KernelOp")
     meta = json.loads((ir_path.parent / "meta.json").read_text())
     arg_order = next(k["arg_order"] for k in meta["kernels"] if k["entry"] == node.op.name)
-    return node.op, arg_order
+    shapes = {n: [int(d.value) for d in graph.nodes[n].output.shape] for n in arg_order}
+    return node.op, arg_order, shapes
 
 
 def main():
-    kernel, arg_order = load_kernel(Path(sys.argv[1]))
-    lowerer = Lowerer(kernel, arg_order)
+    kernel, arg_order, shapes = load_kernel(Path(sys.argv[1]))
+    lowerer = Lowerer(kernel, arg_order, shapes)
     uops = lowerer.lower()
     sys.stdout.write(render(kernel.name, arg_order, uops, lowerer.counts, lowerer.smem))
 
