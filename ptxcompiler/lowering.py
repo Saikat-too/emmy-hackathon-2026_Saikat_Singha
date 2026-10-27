@@ -3,7 +3,7 @@
 from pickle import BINBYTES
 import sys
 
-from .uops import INVERSE_COMPARE, LOG2E, REG_CLASSES, ALU,BINARY_FLOAT_OPS, SIMPLE_UNARY_OPS,UNARY_FLOAT_OPS, Uop
+from .uops import INVERSE_COMPARE, REG_CLASSES, ALU,BINARY_FLOAT_OPS, SIMPLE_UNARY_OPS,UNARY_FLOAT_OPS, Uop
 
 
 class Lowerer:
@@ -150,11 +150,6 @@ class Lowerer:
         elif name in UNARY_FLOAT_OPS:
             op, const = UNARY_FLOAT_OPS[name]
             dst = self.alu(op, "f", args[0], const, into=into)
-        elif name == "exp":
-            scaled = self.alu("fmul", "f", args[0], LOG2E)
-            dst = self.alu("fex2", "f", scaled, into=into)
-        elif name == "copy":
-            dst = self.add("MOV", into or self.reg("f"), (args[0],), "f32")
         elif name in SIMPLE_UNARY_OPS:
             dst = self.alu(SIMPLE_UNARY_OPS[name], "f", args[0], into=into)
         else:
@@ -172,12 +167,6 @@ class Lowerer:
             return
         addr = self.address(s.output, s.index)
         self.add("STORE", None, (addr, *(self.env[v] for v in s.values)))
-
-    def stmt_Let(self, s):
-        """ Name = Literal Constant."""
-        if type(s.value).__name__ != "Literal":
-            sys.exit("Compile Error: Let with a non Literal Value Not supported Yet !")
-        self.env[s.name] = self.add("MOV", self.reg("f"), (float(s.value.value),), "f32")
 
     def stmt_StridedLoop(self, s):
         """for a0 in start..end:step - the loop counter is one register, updated in place."""
@@ -203,8 +192,7 @@ class Lowerer:
         if op is None:
             sys.exit(f"Compile error: accumulate op {s.op.name} is not supported")
         acc = self.env[s.name]
-        left = self.env[s.base] if s.base else acc
-        self.alu(op, "f",left , self.env[s.value], into=acc)
+        self.alu(op, "f", acc, self.env[s.value], into=acc)
 
     def stmt_WarpShuffle(self, s):
         """ Butterfly across the warp: offsets length/2,.., 2, 1; combine after each round"""
@@ -215,7 +203,7 @@ class Lowerer:
                 got = self.add("SHFL", self.reg("r"), (bits,), offset)
                 self.env[name_b] = self.add("MOV", self.reg("f"), (got,), "b32")
             for c in s.combine_states:
-                self.assign(c, into=self.env[c.name] if c.name in s.state else None)
+                self.assign(c, into=self.env[c.name])
             offset //=2
 
     def stmt_Smem(self, s):
@@ -259,7 +247,7 @@ class Lowerer:
                 self.env[name] = self.add("LD_SHARED", self.reg("f"), (self.smem_address(buf, tid),))
                 self.env[name_b] = self.add("LD_SHARED", self.reg("f"), (self.smem_address(buf, other),))
             for c in s.combine_states:
-                self.assign(c, into=self.env[c.name] if c.name in s.state else None)
+                self.assign(c, into=self.env[c.name])
             for buf, name in zip(s.bufs, s.state):
                 self.add("ST_SHARED", None, (self.smem_address(buf, tid), self.env[name]))
             self.add("LABEL", arg=end)
