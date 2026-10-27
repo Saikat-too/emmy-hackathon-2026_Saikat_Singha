@@ -14,6 +14,7 @@ ALU = {
     "iadd": "add.s32",
     "imul": "mul.lo.s32",
     "mad": "mad.lo.s32",
+    "fdiv": "div.rn.f32",
     "wide_imul": "mul.wide.s32",
     "ptr_add": "add.s64",
     "and": "and.b32",
@@ -28,7 +29,7 @@ ALU = {
 }
 
 # IR elementwise op name -> ALU op key
-BINARY_FLOAT_OPS = {"add": "fadd", "multiply": "fmul"}
+BINARY_FLOAT_OPS = {"add": "fadd", "multiply": "fmul", "divide": "fdiv"}
 
 # relu(x) = max(x, 0.0)
 UNARY_FLOAT_OPS = {"relu": ("fmax", 0.0)}
