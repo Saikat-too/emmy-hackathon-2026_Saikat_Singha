@@ -3,7 +3,7 @@
 from pickle import BINBYTES
 import sys
 
-from .uops import INVERSE_COMPARE, REG_CLASSES, ALU,BINARY_FLOAT_OPS,UNARY_FLOAT_OPS, Uop
+from .uops import INVERSE_COMPARE, REG_CLASSES, ALU,BINARY_FLOAT_OPS, SIMPLE_UNARY_OPS,UNARY_FLOAT_OPS, Uop
 
 
 class Lowerer:
@@ -150,6 +150,8 @@ class Lowerer:
         elif name in UNARY_FLOAT_OPS:
             op, const = UNARY_FLOAT_OPS[name]
             dst = self.alu(op, "f", args[0], const, into=into)
+        elif name in SIMPLE_UNARY_OPS:
+            dst = self.alu(SIMPLE_UNARY_OPS[name], "f", args[0], into=into)
         else:
             sys.exit(f"Compile Error: op {name} not supported")
         self.env[s.name] = dst

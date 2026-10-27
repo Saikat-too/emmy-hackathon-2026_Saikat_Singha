@@ -28,6 +28,8 @@ ALU = {
     "fmul": "mul.rn.f32",
     "fmax": "max.f32",
     "fdiv": "div.rn.f32",
+    "fsqrt": "sqrt.rn.f32",
+    "frcp": "rcp.rn.f32",
 }
 
 # IR elementwise op name -> ALU op key
@@ -38,6 +40,8 @@ UNARY_FLOAT_OPS = {"relu": ("fmax", 0.0)}
 
 # jump past as an if body if (lane == 0) -> setp.ne.s32 -> jump past the body when lane not equal to 0
 INVERSE_COMPARE = {"==": "ine", "!=":"ieq", "<": "ige", ">=": "ilt"}
+
+SIMPLE_UNARY_OPS = {"sqrt": "fsqrt", "reciprocal": "frcp"}
 
 class Uop(NamedTuple):
     kind: str            # PARAM, SREG, ALU, LOAD, STORE, BRANCH, LABEL
