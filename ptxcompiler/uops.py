@@ -13,21 +13,27 @@ REG_CLASSES = {"p": "pred", "r": "b32", "rd": "b64", "f": "f32"}
 ALU = {
     "iadd": "add.s32",
     "imul": "mul.lo.s32",
-    "irem": "rem.s32",
-    "idiv": "div.s32",
     "mad": "mad.lo.s32",
     "wide_imul": "mul.wide.s32",
     "ptr_add": "add.s64",
     "and": "and.b32",
     "shr": "shr.u32",
-    "ilt": "setp.lt.s32",
+    "irem": "rem.s32",
+    "idiv": "div.s32",
     "ige": "setp.ge.s32",
+    "isub": "sub.s32",
+    "ilt": "setp.lt.s32",
+    "ile": "setp.le.s32",
+    "igt": "setp.gt.s32",
+    "isel": "selp.s32",
     "ieq": "setp.eq.s32",
     "ine": "setp.ne.s32",
     "fadd": "add.rn.f32",
     "fmul": "mul.rn.f32",
     "fmax": "max.f32",
     "fdiv": "div.rn.f32",
+    "fsub": "sub.rn.f32",
+    "fex2": "ex2.approx.ftz.f32",
     "fsqrt": "sqrt.rn.f32",
     "frcp": "rcp.rn.f32",
 }
@@ -42,6 +48,23 @@ UNARY_FLOAT_OPS = {"relu": ("fmax", 0.0)}
 INVERSE_COMPARE = {"==": "ine", "!=":"ieq", "<": "ige", ">=": "ilt"}
 
 SIMPLE_UNARY_OPS = {"sqrt": "fsqrt", "reciprocal": "frcp"}
+
+LOG2E = 1.4426950408889634    # exp(x) = 2 ** (x * log2(e))
+
+# integer index arithmetic: IR operator -> ALU op key
+INT_BINARY = {"+": "iadd", "-": "isub", "*": "imul", "/": "idiv", "%": "irem"}
+
+# integer comparison: IR operator -> ALU op key (computes a predicate)
+INT_COMPARE = {"<": "ilt", "<=": "ile", ">": "igt", ">=": "ige", "==": "ieq", "!=": "ine"}
+
+SMEM_STATIC_LIMIT = 48 * 1024    # above this a kernel needs dynamic shared memory
+
+
+
+class SmemLayout(NamedTuple):
+    arrays: dict    # array name -> (byte offset , size in bytes, allignment)
+    pooled: bool    # True: one dynamic pool (needed above 48kb), False: static arrays
+    align: int      # alignment of the pool
 
 class Uop(NamedTuple):
     kind: str            # PARAM, SREG, ALU, LOAD, STORE, BRANCH, LABEL
