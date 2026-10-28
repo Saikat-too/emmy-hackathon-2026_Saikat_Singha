@@ -1,116 +1,236 @@
-# Emmy Hackathon — write a PTX compiler for Kernel IR
 
-Emmy (github.com/cloudrift-ai/emmy) compiles PyTorch to CUDA C++ and builds it with `nvcc`.
-**Your task: write a compiler that takes Emmy's Kernel IR and emits PTX directly**, skipping the
-CUDA C++ step. `ptxas` turns PTX into the same GPU binary ~19× faster than the full `nvcc`
-pipeline — Emmy's autotuner compiles thousands of kernel variants, so that middle step matters.
+# Kernel IR to PTX Compiler
 
-You do **not** need a GPU. A hosted runner at `http://runner.riftstack.ai:48701` (the default in `submit.py`) compiles
-your PTX with `ptxas`, executes it on real hardware, and tells you whether the output is correct. See [docs/API.md](docs/API.md).
+A compiler for the **Emmy Hackathon 2026** task: it takes Emmy's *Kernel IR* (a JSON tree describing what one GPU thread does) and emits **PTX** directly, skipping the CUDA C++ and `nvcc` step.
 
-## Requirements
+```
+python compile.py path/to/kernel.ir.json > out.ptx
+```
 
-- **Python 3.12 or newer.** The Kernel IR only deserializes through Emmy's own classes:
+The translation from IR to PTX is written from scratch in this repository. The `emmy-ml` package is used only to *load* the IR (`Graph.from_dict`); none of Emmy's own code generation is used.
 
-  ```bash
-  pip install emmy-ml==0.3.11       # no torch, no CUDA, no GPU needed
-  ```
+## Contents
 
-  This alone reads every problem IR. Torch is **not** needed — it is only required to
-  *generate* new IRs from PyTorch expressions, which is optional.
+1. [Quick start](#1-quick-start)
+2. [Project structure](#2-project-structure)
+3. [How it works](#3-how-it-works)
+4. [Problems and categories covered](#4-problems-and-categories-covered)
+5. [Supported IR statements and operations](#5-supported-ir-statements-and-operations)
+6. [What is not covered](#6-what-is-not-covered)
+7. [Extending the compiler](#7-extending-the-compiler)
+8. [Notes](#8-notes)
 
-- Your submission is a **program**, not PTX files. It must run as:
+---
 
-  ```bash
-  python compile.py path/to/kernel.ir.json > out.ptx
-  ```
+## 1. Quick start
 
-  This contract matters: submissions are evaluated against a **hidden set** of Kernel IRs in the
-  same categories as the open problems. Hardcoding the open set scores nothing.
-
-## Five-minute start
+Requires **Python 3.12 or newer**. No GPU and no CUDA toolkit are needed to compile.
 
 ```bash
-git clone https://github.com/cloudrift-ai/emmy-hackathon-2026 && cd emmy-hackathon-2026
-pip install emmy-ml==0.3.11 numpy requests   # no torch needed
-python submit.py r01_array_sum examples/k_sum_1_reduce.ptx    # see a pass
-python submit.py p00_scalar_add examples/k_sum_1_reduce.ptx   # wrong entry: a clean failure
-python submit.py p00_scalar_add --compiler compile.py         # your compiler, once you have one
+python -m venv .venv && source .venv/bin/activate
+pip install emmy-ml==0.3.11 numpy requests
+
+# compile one kernel and look at the PTX
+python compile.py problems/p00_scalar_add/k_add_pointwise.ir.json
+
+# compile it, run it on the hosted GPU runner and check the result
+python submit.py p00_scalar_add --compiler compile.py
 ```
 
-Then open `problems/p00_scalar_add/` and look at three files:
+Run every finished problem in one go:
 
-| file | what it is |
+```bash
+for p in p00_scalar_add p01_vector_add p02_scale_shift p03_relu_mul \
+         r01_array_sum r02_big_sum r03_mean r04_row_sum \
+         m01_matmul_512 m02_matmul_rect \
+         f01_rmsnorm f02_row_softmax f03_l2norm; do
+  python submit.py $p --compiler compile.py
+done
+```
+---
+
+## 2. Project structure
+
+```
+.
+├── compile.py              entry point: loads the IR, runs both phases, prints PTX
+├── ptxcompiler/            the compiler package
+│   ├── __init__.py
+│   ├── uops.py             shared vocabulary: Uop record, ALU table, register classes, shared-memory layout
+│   ├── lowering.py         phase 1: Kernel IR  ->  flat list of Uop records
+│   └── render.py           phase 2: Uop records  ->  PTX text
+├── problems/               the open problem set (see section 4)
+│   └── <problem>/          *.ir.json (input), *.ir.txt (readable), *.ref.cu (reference CUDA),
+│                           meta.json (launch geometry, argument order), expected.npz (expected outputs)
+├── examples/               hand-written reference PTX from the task authors
+├── docs/API.md             API of the hosted runner
+├── tools/                  how the problems were generated
+├── submit.py               compile + run on the runner + compare with expected outputs
+├── TASK.md                 the task statement and IR reference
+├── MVP.md                  the minimum bar for a valid submission
+└── README.md               this file
+```
+
+| File | Responsibility |
 |---|---|
-| `*.ir.json` | the Kernel IR — **the input to your compiler** |
-| `*.ir.txt` | the same IR, pretty-printed for reading |
-| `*.ref.cu` | Emmy's generated CUDA C++ — the reference answer, in a different target language |
+| `compile.py` | Reads the IR with Emmy's `Graph`, reads `arg_order` from the `meta.json` next to the IR, collects buffer shapes, then calls `Lowerer` and `render`. |
+| `ptxcompiler/uops.py` | Defines `Uop` (one abstract instruction), `REG_CLASSES` (register types), `ALU` (abstract op name to PTX mnemonic) and `SmemLayout` (shared-memory plan). |
+| `ptxcompiler/lowering.py` | The `Lowerer` class: one `stmt_<Name>` method per IR statement type, plus index-expression compilation. Produces Uops, never text. |
+| `ptxcompiler/render.py` | One small `r_<kind>` function per Uop kind, a `RENDER` dispatch table, and the code that writes the PTX header, parameter list, shared-memory declarations and register declarations. |
 
-Load an IR in Python:
+---
 
-```python
-import json
-from emmy.compiler.graph import Graph
-g = Graph.from_dict(json.load(open("problems/r01_array_sum/k_sum_1_reduce.ir.json")))
-body = g.nodes["sum_1"].op.body     # a tree of typed statements: Tile, StridedLoop, Load, ...
-```
+## 3. How it works
 
-Your compiler walks that tree and prints PTX. Start with the common node kinds in the short table —
-see [TASK.md](TASK.md) for the categories and the node-by-node translation table.
-
-## The problems
-
-15 open problems in 5 categories, easy → hard: **pointwise → reductions → matmul → fused →
-attention-like**. Each is a folder under `problems/` with the IR, the reference, a launch
-descriptor (`meta.json` — you never guess grid/block), and expected outputs (`expected.npz`).
-
-**MVP: your compiler passes categories 1 and 2.** See [MVP.md](MVP.md).
-
-Problems are scheduled for `sm_89`, and the runner is an **RTX 5090 (`sm_120`)**, where PTX written for `sm_89`
-runs unchanged; [problems/PROVENANCE.md](problems/PROVENANCE.md)
-says how they were generated and checked. The hidden evaluation set contains more problems of the *same kinds* —
-different shapes and ops, no surprise concepts.
-
-## Submitting
-
-Submit at [riftstack.ai/hackathon/submit](https://riftstack.ai/hackathon/submit) before
-**23:59 AoE on Tuesday, October 27**. A submission is:
-
-- a **public GitHub repository** with `compile.py` at its root, runnable as
-  `python compile.py path/to/kernel.ir.json > out.ptx`;
-- a **video of 3 to 5 minutes** in which you walk through your compiler in your own voice
-  (YouTube, Vimeo or Google Drive, shared so that anyone with the link can watch it).
-
-Teams of up to three submit once and list every member. You can submit again until the
-deadline; we review your latest entry. AI coding assistants are allowed, but your video has to
-show that you understand how your compiler works — an entry where the understanding seems to
-have been handed to an AI is not eligible for a prize.
-
-## How compilers are evaluated
-
-We run your `compile.py` on every kernel of the **hidden set** — the same five categories as the
-open problems, with different shapes and ops — then assemble the PTX with `ptxas`, run it on the
-runner's GPU under each problem's `meta.json` launch, and compare the outputs with the expected
-ones within the problem's tolerance. This is the pipeline `submit.py --compiler` runs, so passing
-the open set that way is the best preparation. Keep compiling to seconds per kernel: a time
-limit may apply.
-
-1. **Correctness on the hidden set, by category.** Passing categories 1 and 2 is the bar
-   ([MVP.md](MVP.md)); each further category is what sets submissions apart.
-2. **Code review** of your compiler is the first tiebreak. The IR → PTX lowering has to be your
-   own — see the rule in [TASK.md](TASK.md).
-3. **Speed** of the generated kernels is the last tiebreak.
-
-The video decides prize eligibility, as described above.
-
-## Repo map
+### The pipeline
 
 ```
-problems/     the open set (15 problems)
-examples/     hand-written PTX with comments mapping each block back to the IR
-submit.py     one-command test: compile + run + check against expected outputs
-docs/API.md   the runner API, if you want to call it directly
-tools/        how the problems were generated (emmy compile -c ... --ir cuda)
-TASK.md       the task, the categories, the CLI contract
-MVP.md        the minimum bar
+kernel.ir.json  +  meta.json
+          |
+          v
+   compile.py        load the IR (emmy Graph.from_dict), read argument order and buffer shapes
+          |
+          v
+   Lowerer           PHASE 1  walk the IR statements, append Uop records to a flat list
+          |
+          v
+   render()          PHASE 2  print each Uop as PTX; write header and .reg declarations last
+          |
+          v
+      out.ptx   ->   ptxas   ->   GPU binary
 ```
+
+The two phases only share the `Uop` record, so a bug is easy to place: wrong records mean phase 1, right records but wrong text mean phase 2. You can print the records with `print(*uops, sep="\n", file=sys.stderr)` after `lowerer.lower()`.
+
+A `Uop` is a small note such as `Uop(kind="ALU", dst="%f2", srcs=("%f1", 0.0), arg="fmax")`. It holds no PTX text. `render()` turns it into `max.f32 %f2, %f1, 0f00000000;`.
+
+### Main ideas
+
+- **One thread per Tile cell.** The IR describes the work of one thread. The thread number is split row-major into one coordinate per Tile axis (the last axis varies fastest). A guard `if gid >= N: exit` retires extra threads.
+- **A name-to-register map.** `Lowerer.env` maps IR value names to registers. Each statement looks up its inputs there and records its result. `render()` never sees IR names.
+- **In-place updates.** Accumulators and loop counters are updated in the same register on each iteration (`alu(..., into=reg)`), unlike ordinary values, which get fresh registers.
+- **Index expressions.** Compiled recursively with constant folding, including `+ - * / %`, comparisons and the ternary operator. Multi-dimensional buffers are flattened row-major from their shapes (`flat_index`).
+- **Control flow.** Loops become labels plus conditional and unconditional branches. An `if` jumps over its body using the *opposite* comparison.
+- **Reductions.** Each thread accumulates over a strided loop, a warp butterfly (`shfl.sync.bfly`) combines the 32 lanes, per-warp partial results go to shared memory, and a tree halving with barriers combines the warps.
+- **Shared memory planning.** All shared arrays are laid out up front at aligned offsets. Up to 48 KiB they are static `.shared` arrays. Above that (`m01_matmul_512` uses 73,728 bytes) they share one dynamic `.extern .shared` pool, which relies on the launch passing `smem_bytes` from `meta.json`.
+- **Asynchronous copies.** `CpAsyncCopy` becomes `cp.async.cg.shared.global`, with `commit_group` and `wait_group` emitted in IR order.
+- **Rounding that matches numpy.** Add, subtract and multiply use the `.rn` forms so `ptxas` never fuses a multiply and add into an `fma`. Pointwise results are bit-identical to the reference.
+- **Registers.** The compiler uses unlimited virtual registers with one counter per register class; `ptxas` does the real allocation. The `.reg` declarations are written last because the counts are only known at the end.
+- **No hardcoding.** Nothing depends on a problem's name or values. Launch geometry, argument order, shapes and extents all come from the IR and `meta.json`.
+
+---
+
+## 4. Problems and categories covered
+
+The open set has 15 problems in 5 categories. "Verified on the hosted runner" means `submit.py` reported PASS on the real GPU.
+
+| # | Category | Problem | What it computes | Status | Max abs error |
+|---|---|---|---|---|---|
+| 1 | Pointwise | `p00_scalar_add` | elementwise add | verified on runner | 0 |
+| 1 | Pointwise | `p01_vector_add` | elementwise add, wider stores | verified on runner | 0 |
+| 1 | Pointwise | `p02_scale_shift` | `c1 + c2 * x`, constants as 1-element buffers | verified on runner | 0 |
+| 1 | Pointwise | `p03_relu_mul` | `y * relu(x)` | verified on runner | 0 |
+| 2 | Reduction | `r01_array_sum` | sum of an array | verified on runner | 3.8e-06 |
+| 2 | Reduction | `r02_big_sum` | sum over a larger array | verified on runner | 1.5e-05 |
+| 2 | Reduction | `r03_mean` | mean (sum divided by a count) | verified on runner | 9.3e-10 |
+| 2 | Reduction | `r04_row_sum` | sum of each row of a 2-D array | verified on runner | 5.7e-06 |
+| 3 | Matmul | `m01_matmul_512` | 512x512 matmul, tiled, `cp.async` pipeline, 72 KiB shared memory | verified on runner | 8.8e-05 |
+| 3 | Matmul | `m02_matmul_rect` | rectangular matmul, split-K with atomic adds | verified on runner | n/a |
+| 4 | Fused | `f01_rmsnorm` | RMS normalisation (reduction plus elementwise pass) | verified on runner | 1.9e-06 |
+| 4 | Fused | `f02_row_softmax` | row softmax with online max and sum | verified on runner | 7.5e-09 |
+| 4 | Fused | `f03_l2norm` | L2 normalisation | verified on runner | 1.5e-08 |
+| 5 | Attention | `a01_attention`, `a02_attention_128` | attention-like kernels | **not attempted** | 1.335e-05 |
+
+The task's minimum bar (MVP) is categories 1 and 2, which are complete. The evaluation uses a hidden set of kernels of the same kinds with different shapes and operations, so the compiler is written to be general rather than tuned to the open problems. See section 6 for the known gaps that a hidden kernel could hit.
+
+---
+
+## 5. Supported IR statements and operations
+
+### Statements
+
+| IR node | Translation |
+|---|---|
+| `Tile` (any number of axes) | thread id, decoded into axis coordinates, with a bounds guard |
+| `Load` | `ld.global.f32` (scalar), `ld.shared.f32` from shared arrays |
+| `Assign` | float arithmetic, see below |
+| `Let` | constant register (literal values only) |
+| `Write` | `st.global.f32`, or `st.global.v2/v4.f32` for grouped values; `st.shared.f32`; atomic `red.global.add.f32` |
+| `StridedLoop`, `Loop` | counted loop with labels and branches |
+| `Init`, `Accum` | accumulator seeded with a literal, updated in place (`acc = op(acc, value)` or `op(base, value)`) |
+| `WarpShuffle` | butterfly with `shfl.sync.bfly.b32`, offsets 16, 8, 4, 2, 1 |
+| `Smem` | static array or slice of the dynamic pool |
+| `Cond` | `if` with a comparison on `==`, `!=`, `<` or `>=` (no `else`) |
+| `Sync` | `bar.sync` |
+| `TreeHalve` | halving combine through shared memory with barriers |
+| `CpAsyncCopy`, `CpAsyncCommit`, `CpAsyncWait` | `cp.async.cg.shared.global`, `commit_group`, `wait_group` |
+
+### Float operations (`f32`)
+
+`add`, `subtract`, `multiply`, `divide`, `maximum`, `relu`, `sqrt`, `reciprocal`, `exp`, `copy`.
+
+`exp(x)` is computed as `ex2.approx(x * log2(e))`. Division, square root and reciprocal use the correctly rounded `.rn` forms.
+
+### Integer index expressions
+
+`+`, `-`, `*`, `/`, `%`, the comparisons `< <= > >= == !=`, and the ternary `cond ? a : b`.
+
+---
+
+## 6. What is not covered
+
+These are known gaps. A hidden-set kernel that needs any of them will fail with a clear message on stderr (or, for vector loads, an error during compilation).
+
+**Data types**
+- Only `f32` is supported. There is no `f16`, `bf16`, `fp8`, `f64` or integer data (as data, not as indices).
+
+**Tensor cores and Hopper/Blackwell features**
+- No `mma.sync`, `wgmma` or TMA instructions. The task marks these as not required, and no open problem uses them. Matmul is done with ordinary multiply-adds.
+
+**Memory access**
+- **Vector loads are not implemented.** The task's pointwise category mentions them, but every open problem uses scalar loads. A `Load` that names several values would only bind the first one.
+- Stores wider than 4 values are not split into several vector stores.
+- Swizzled `cp.async` layouts are not supported, and shared-memory writes with several values are not supported.
+- Atomic writes work for global memory only.
+
+**Operations**
+- Missing elementwise ops include `negative`, `absolute`, `minimum`, `square`, `rsqrt`, `log`, `sigmoid`, `silu`, `tanh` and `where`. Each is a one-line addition (section 7).
+- Accumulations use the supported float ops, so a min-reduction is not available until `minimum` exists.
+
+**Control flow and structure**
+- `Cond` has no `else` branch and only the four comparisons listed above.
+- `Let` accepts literal values only.
+- `Sync` supports only the whole-block barrier (no counts, no warp-level variant), and `TreeHalve` with an `inner` loop is not supported.
+- `unroll` flags are ignored; loops are emitted as real loops.
+- Warp shuffles use the full mask `0xffffffff`, so every lane of a warp must reach them. This holds for the open problems (cell counts that are multiples of 32).
+- Only 1-D launches are handled (`%tid.x`, `%ctaid.x`), and the compiler assumes one kernel per IR file.
+- `meta.json` must be in the same folder as the IR; there is no fallback if it is missing.
+
+**Categories**
+- Attention (`a01`, `a02`) has not been attempted.
+
+**Performance**
+- No optimisation is done. Common subexpressions (such as `a0 * 2` recomputed for every address) are recomputed, loops are not unrolled, and instructions are not scheduled. The task treats speed only as a final tiebreak, and `ptxas` removes much of the redundancy itself.
+
+**Target**
+- The PTX targets `sm_89`, which the task says runs unchanged on the runner's `sm_120` GPU.
+
+---
+
+## 7. Extending the compiler
+
+**Add a float operation.** Add an entry to the `ALU` table in `ptxcompiler/uops.py` if it needs a new instruction (for example `"fmin": "min.f32"`), then map the IR op name to it in the op tables in `ptxcompiler/uops.py` (for example `"minimum": "fmin"` in `BINARY_FLOAT_OPS`). No change to `render.py` is needed, because `r_alu` prints any ALU record.
+
+**Add an IR statement type.**
+1. Add a method `stmt_<NodeName>` to `Lowerer` in `lowering.py`. The method name must match the IR class name exactly, because statements are dispatched by name.
+2. If it needs PTX that no existing record can express, add a new `Uop` kind (list it in the comment in `uops.py`), a matching `r_<kind>` function in `render.py`, and an entry in the `RENDER` table.
+3. Remember that a statement that defines a value must store it in `self.env`.
+
+---
+
+## 8. Notes
+
+- **Rules.** The task requires the IR-to-PTX lowering to be original code. This project uses Emmy only to load the IR.
+- **Design credit.** The two-phase structure (a flat list of simple operations plus a separate renderer) is inspired by the PTX renderer in [tinygrad](https://github.com/tinygrad/tinygrad). No code was copied from it.
+- **Tooling.** AI coding assistance was used during development, as the hackathon allows.
+- **Task documents.** `TASK.md` and `MVP.md` contain the original task statement, the IR reference and the minimum bar.
