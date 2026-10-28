@@ -135,11 +135,11 @@ The open set has 15 problems in 5 categories. "Verified on the hosted runner" me
 | 2 | Reduction | `r03_mean` | mean (sum divided by a count) | verified on runner | 9.3e-10 |
 | 2 | Reduction | `r04_row_sum` | sum of each row of a 2-D array | verified on runner | 5.7e-06 |
 | 3 | Matmul | `m01_matmul_512` | 512x512 matmul, tiled, `cp.async` pipeline, 72 KiB shared memory | verified on runner | 8.8e-05 |
-| 3 | Matmul | `m02_matmul_rect` | rectangular matmul, split-K with atomic adds | verified on runner | n/a |
+| 3 | Matmul | `m02_matmul_rect` | rectangular matmul, split-K with atomic adds | verified on runner | 1.335e-05 |
 | 4 | Fused | `f01_rmsnorm` | RMS normalisation (reduction plus elementwise pass) | verified on runner | 1.9e-06 |
 | 4 | Fused | `f02_row_softmax` | row softmax with online max and sum | verified on runner | 7.5e-09 |
 | 4 | Fused | `f03_l2norm` | L2 normalisation | verified on runner | 1.5e-08 |
-| 5 | Attention | `a01_attention`, `a02_attention_128` | attention-like kernels | **not attempted** | 1.335e-05 |
+| 5 | Attention | `a01_attention`, `a02_attention_128` | attention-like kernels | **not attempted** | n/a |
 
 The task's minimum bar (MVP) is categories 1 and 2, which are complete. The evaluation uses a hidden set of kernels of the same kinds with different shapes and operations, so the compiler is written to be general rather than tuned to the open problems. See section 6 for the known gaps that a hidden kernel could hit.
 
