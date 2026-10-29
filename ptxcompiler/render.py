@@ -17,7 +17,7 @@ def vec(dst):
     """ ('%f1', '%f2) -> ('.v2', '{%f1, %f2}'; a single register stays scalar."""
     if isinstance(dst, tuple):
        return f".v{len(dst)}","{" + ", ".join(dst) + "}"
-    return " ", dst
+    return "", dst
 
 def r_param(u):  return [f"ld.param.u64 {u.dst}, [param_{u.arg}];", f"cvta.to.global.u64 {u.dst}, {u.dst};"]
 def r_sreg(u):   return [f"mov.u32 {u.dst}, {u.arg};"]
