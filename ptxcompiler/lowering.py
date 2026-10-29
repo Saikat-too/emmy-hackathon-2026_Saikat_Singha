@@ -3,7 +3,7 @@
 import sys
 from math import prod
 
-from .uops import ALU, REG_CLASSES,UNARY_FLOAT_OPS,SIMPLE_UNARY_OPS,BINARY_FLOAT_OPS,INT_BINARY,INT_COMPARE,INVERSE_COMPARE,SMEM_STATIC_LIMIT, SmemLayout, Uop
+from .uops import ALU, REG_CLASSES,UNARY_FLOAT_OPS,SIMPLE_UNARY_OPS,BINARY_FLOAT_OPS,INT_BINARY,INT_COMPARE,INVERSE_COMPARE,SMEM_STATIC_LIMIT,LOG2E, SmemLayout, Uop
 
 
 class Lowerer:
@@ -186,12 +186,23 @@ class Lowerer:
     # ---- statements ----
 
     def stmt_Load(self, s):
-        if s.input in self.smem_base:                   # read from a shared array
+        """ names = load input[index]. Several names = consecutive elements = one vector load."""
+        n = len(s.names)
+        if n not in (1,2,4):
+            sys.exit(f"Compile Error: a load of {n} values is not supported (1,2 or 4)")
+        shared = s.input in self.smem_base
+        if shared:                   # read from a shared array
             addr = self.smem_address(s.input, self.flat_index(s.input, s.index))
-            self.env[s.names[0]] = self.add("LD_SHARED", self.reg("f"), (addr,))
+        else:
+            addr = self.address(s.input, s.index)
+        kind = "LD_SHARED" if shared else "LOAD"
+        if n == 1:
+            self.env[s.names[0]] = self.add(kind, self.reg("f"), (addr,))
             return
-        dst = self.add("LOAD", self.reg("f"), (self.address(s.input, s.index),))
-        self.env[s.names[0]] = dst
+        regs = tuple(self.reg("f") for _ in range(n))
+        self.add (kind, regs, (addr,))
+        for name , r in zip(s.names, regs):
+            self.env[name] = r
 
     def stmt_Assign(self, s):
         self.assign(s)

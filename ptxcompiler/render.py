@@ -13,16 +13,25 @@ def operand(x):
         return "0f%08X" % struct.unpack(">I", struct.pack(">f", x))[0]
     return str(x)
 
+def vec(dst):
+    """ ('%f1', '%f2) -> ('.v2', '{%f1, %f2}'; a single register stays scalar."""
+    if isinstance(dst, tuple):
+       return f".v{len(dst)}","{" + ", ".join(dst) + "}"
+    return " ", dst
 
 def r_param(u):  return [f"ld.param.u64 {u.dst}, [param_{u.arg}];", f"cvta.to.global.u64 {u.dst}, {u.dst};"]
 def r_sreg(u):   return [f"mov.u32 {u.dst}, {u.arg};"]
 def r_alu(u):    return [f"{ALU[u.arg]} {u.dst}, {', '.join(map(operand, u.srcs))};"]
 def r_mov(u):    return [f"mov.{u.arg} {u.dst}, {operand(u.srcs[0])};"]
-def r_load(u):   return [f"ld.global.f32 {u.dst}, [{u.srcs[0]}];"]
+def r_load(u):
+    v , d = vec(u.dst)
+    return [f"ld.global{v}.f32 {d}, [{u.srcs[0]}];"]
 def r_branch(u): return [f"@{u.srcs[0]} bra {u.arg};"]
 def r_jump(u):   return [f"bra {u.arg};"]
 def r_label(u):  return [f"{u.arg}:"]
-def r_ld_shared(u):   return [f"ld.shared.f32 {u.dst}, [{u.srcs[0]}];"]
+def r_ld_shared(u):
+    v , d = vec(u.dst)
+    return [f"ld.shared{v}.f32 {d}, [{u.srcs[0]}];"]
 def r_st_shared(u):   return [f"st.shared.f32 [{u.srcs[0]}], {u.srcs[1]};"]
 
 

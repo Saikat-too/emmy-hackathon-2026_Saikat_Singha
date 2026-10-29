@@ -39,7 +39,7 @@ ALU = {
 }
 
 # IR elementwise op name -> ALU op key
-BINARY_FLOAT_OPS = {"add": "fadd", "multiply": "fmul", "divide": "fdiv"}
+BINARY_FLOAT_OPS = {"add": "fadd", "multiply": "fmul", "divide": "fdiv", "subtract": "fsub", "maximum": "fmax"}
 
 # relu(x) = max(x, 0.0)
 UNARY_FLOAT_OPS = {"relu": ("fmax", 0.0)}
@@ -68,6 +68,6 @@ class SmemLayout(NamedTuple):
 
 class Uop(NamedTuple):
     kind: str            # PARAM, SREG, ALU, LOAD, STORE, BRANCH, LABEL
-    dst: str | None      # register written, if any
+    dst: str | tuple | None      # register written ( a tuple = vector load), if any
     srcs: tuple          # registers or integer constants read
     arg: object = None   # extra info: param name, ALU op key, label, ...
