@@ -1,4 +1,3 @@
-
 # Kernel IR to PTX Compiler
 
 A compiler for the **Emmy Hackathon 2026** task: it takes Emmy's *Kernel IR* (a JSON tree describing what one GPU thread does) and emits **PTX** directly, skipping the CUDA C++ and `nvcc` step.
@@ -43,7 +42,8 @@ Run every finished problem in one go:
 for p in p00_scalar_add p01_vector_add p02_scale_shift p03_relu_mul \
          r01_array_sum r02_big_sum r03_mean r04_row_sum \
          m01_matmul_512 m02_matmul_rect \
-         f01_rmsnorm f02_row_softmax f03_l2norm; do
+         f01_rmsnorm f02_row_softmax f03_l2norm \
+         a01_attention a02_attention_128; do
   python submit.py $p --compiler compile.py
 done
 ```
@@ -113,6 +113,7 @@ A `Uop` is a small note such as `Uop(kind="ALU", dst="%f2", srcs=("%f1", 0.0), a
 - **Control flow.** Loops become labels plus conditional and unconditional branches. An `if` jumps over its body using the *opposite* comparison.
 - **Reductions.** Each thread accumulates over a strided loop, a warp butterfly (`shfl.sync.bfly`) combines the 32 lanes, per-warp partial results go to shared memory, and a tree halving with barriers combines the warps.
 - **Shared memory planning.** All shared arrays are laid out up front at aligned offsets. Up to 48 KiB they are static `.shared` arrays. Above that (`m01_matmul_512` uses 73,728 bytes) they share one dynamic `.extern .shared` pool, which relies on the launch passing `smem_bytes` from `meta.json`.
+- **Vector loads.** A `Load` that binds 2 or 4 names (consecutive elements) becomes one `ld.global.v2/v4.f32` (or `ld.shared`) with one register per name. Other widths fall back to one scalar load per element. The vector address is assumed aligned, as in the reference CUDA.
 - **Asynchronous copies.** `CpAsyncCopy` becomes `cp.async.cg.shared.global`, with `commit_group` and `wait_group` emitted in IR order.
 - **Rounding that matches numpy.** Add, subtract and multiply use the `.rn` forms so `ptxas` never fuses a multiply and add into an `fma`. Pointwise results are bit-identical to the reference.
 - **Registers.** The compiler uses unlimited virtual registers with one counter per register class; `ptxas` does the real allocation. The `.reg` declarations are written last because the counts are only known at the end.
@@ -139,9 +140,10 @@ The open set has 15 problems in 5 categories. "Verified on the hosted runner" me
 | 4 | Fused | `f01_rmsnorm` | RMS normalisation (reduction plus elementwise pass) | verified on runner | 1.9e-06 |
 | 4 | Fused | `f02_row_softmax` | row softmax with online max and sum | verified on runner | 7.5e-09 |
 | 4 | Fused | `f03_l2norm` | L2 normalisation | verified on runner | 1.5e-08 |
-| 5 | Attention | `a01_attention`, `a02_attention_128` | attention-like kernels | **not attempted** | n/a |
+| 5 | Attention | `a01_attention` | fused matmul, softmax and reduce; vector loads, 128 registers | verified on runner | 6.6e-07 |
+| 5 | Attention | `a02_attention_128` | attention-like kernel, larger head size | verified on runner | 4.8e-07 |
 
-The task's minimum bar (MVP) is categories 1 and 2, which are complete. The evaluation uses a hidden set of kernels of the same kinds with different shapes and operations, so the compiler is written to be general rather than tuned to the open problems. See section 6 for the known gaps that a hidden kernel could hit.
+All 15 open problems pass on the hosted runner. The task's minimum bar (MVP) is categories 1 and 2, which are complete, and categories 3 to 5 are complete as well. The evaluation uses a hidden set of kernels of the same kinds with different shapes and operations, so the compiler is written to be general rather than tuned to the open problems. See section 6 for the known gaps that a hidden kernel could hit.
 
 ---
 
@@ -152,7 +154,7 @@ The task's minimum bar (MVP) is categories 1 and 2, which are complete. The eval
 | IR node | Translation |
 |---|---|
 | `Tile` (any number of axes) | thread id, decoded into axis coordinates, with a bounds guard |
-| `Load` | `ld.global.f32` (scalar), `ld.shared.f32` from shared arrays |
+| `Load` | `ld.global.f32` / `ld.shared.f32` (one name); `ld.global.v2/v4.f32` / `ld.shared.v2/v4.f32` (2 or 4 names); scalar loads at consecutive addresses for any other count |
 | `Assign` | float arithmetic, see below |
 | `Let` | constant register (literal values only) |
 | `Write` | `st.global.f32`, or `st.global.v2/v4.f32` for grouped values; `st.shared.f32`; atomic `red.global.add.f32` |
@@ -179,7 +181,7 @@ The task's minimum bar (MVP) is categories 1 and 2, which are complete. The eval
 
 ## 6. What is not covered
 
-These are known gaps. A hidden-set kernel that needs any of them will fail with a clear message on stderr (or, for vector loads, an error during compilation).
+These are known gaps. A hidden-set kernel that needs any of them will fail with a clear message on stderr.
 
 **Data types**
 - Only `f32` is supported. There is no `f16`, `bf16`, `fp8`, `f64` or integer data (as data, not as indices).
@@ -188,7 +190,7 @@ These are known gaps. A hidden-set kernel that needs any of them will fail with 
 - No `mma.sync`, `wgmma` or TMA instructions. The task marks these as not required, and no open problem uses them. Matmul is done with ordinary multiply-adds.
 
 **Memory access**
-- **Vector loads are not implemented.** The task's pointwise category mentions them, but every open problem uses scalar loads. A `Load` that names several values would only bind the first one.
+- Vector loads (2 or 4 values) assume the address is aligned to the vector size (8 or 16 bytes). The compiler does not check this; the IR is expected to guarantee it, as the reference CUDA does.
 - Stores wider than 4 values are not split into several vector stores.
 - Swizzled `cp.async` layouts are not supported, and shared-memory writes with several values are not supported.
 - Atomic writes work for global memory only.
@@ -205,9 +207,6 @@ These are known gaps. A hidden-set kernel that needs any of them will fail with 
 - Warp shuffles use the full mask `0xffffffff`, so every lane of a warp must reach them. This holds for the open problems (cell counts that are multiples of 32).
 - Only 1-D launches are handled (`%tid.x`, `%ctaid.x`), and the compiler assumes one kernel per IR file.
 - `meta.json` must be in the same folder as the IR; there is no fallback if it is missing.
-
-**Categories**
-- Attention (`a01`, `a02`) has not been attempted.
 
 **Performance**
 - No optimisation is done. Common subexpressions (such as `a0 * 2` recomputed for every address) are recomputed, loops are not unrolled, and instructions are not scheduled. The task treats speed only as a final tiebreak, and `ptxas` removes much of the redundancy itself.
