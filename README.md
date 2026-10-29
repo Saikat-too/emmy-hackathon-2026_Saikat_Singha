@@ -8,6 +8,8 @@ python compile.py path/to/kernel.ir.json > out.ptx
 
 The translation from IR to PTX is written from scratch in this repository. The `emmy-ml` package is used only to *load* the IR (`Graph.from_dict`); none of Emmy's own code generation is used.
 
+Problems and harness provided by the Emmy hackathon; the compiler in ```ptxcompiler/``` is my work.
+
 ## Contents
 
 1. [Quick start](#1-quick-start)
